@@ -365,6 +365,27 @@ def fetchUsers() -> List[models.Usr]:
 	except Exception as e: raise mkErr("Failed to fetch users", e)
 
 
+# Images, plus videos Immich counts. Hidden and locked videos are live-photo
+# motion clips (and similar) and are excluded from server video statistics.
+_LIB_WHERE = """status = 'active' AND (type = 'IMAGE' OR (type = 'VIDEO' AND visibility IN ('timeline', 'archive')))"""
+
+
+def countLibrary(usrId=None):
+	try:
+		sch = getSchema()
+		with mkConn() as conn:
+			with conn.cursor() as cursor:
+				q = f"Select Count(*) From {sch.asset} Where {_LIB_WHERE}"
+				params = []
+				if usrId:
+					q += ' AND "ownerId" = %s'
+					params.append(usrId)
+				cursor.execute(Q(q), params)
+				rst = cursor.fetchone()
+				return rst[0] if rst else 0
+	except Exception as e: raise mkErr("Failed to count library assets", e)
+
+
 def count(usrId=None, assetType="IMAGE"):
 	try:
 		sch = getSchema()
@@ -503,8 +524,8 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 			with conn.cursor(row_factory=dict_row) as cursor:
 				# count all
 				sch = getSchema()
-				cntQ = f"Select Count( * ) From {sch.asset} Where status = 'active' And type IN (%s, %s)"
-				cntArs = list(asTypes)
+				cntQ = f"Select Count( * ) From {sch.asset} Where {_LIB_WHERE}"
+				cntArs = []
 
 				if usrId:
 					cntQ += " AND \"ownerId\" = %s"
@@ -524,9 +545,9 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 				#----------------------------------------------------------------
 				# query assets
 				#----------------------------------------------------------------
-				assetQ = f"Select * From {sch.asset} Where status = 'active' And type IN (%s, %s)"
+				assetQ = f"Select * From {sch.asset} Where {_LIB_WHERE}"
 
-				params = list(asTypes)
+				params = []
 
 				if usrId:
 					assetQ += " AND \"ownerId\" = %s"
