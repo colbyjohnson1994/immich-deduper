@@ -28,6 +28,7 @@ def mk(ass: models.Asset, modSim=True):
 	isMain = ass.vw.isMain
 	isRels = ass.vw.isRelats
 	isLive = ass.vdoId is not None
+	isVid = (ass.type or '') == 'VIDEO'
 	canFnd=ass.simOk==0
 	hasVec=ass.isVectored==1
 	isKep=ass.isKep==1
@@ -144,6 +145,7 @@ def mk(ass: models.Asset, modSim=True):
 				], className="LT"),
 				htm.Div([
 					htm.Span(f"LivePhoto", className="tag blue livePhoto") if isLive else None,
+					htm.Span("Video", className="tag blue") if isVid else None,
 					htm.Span([
 						htm.I(className='bi bi-images'),
 						f'{len(ex.albs)}',
@@ -229,7 +231,7 @@ def mk(ass: models.Asset, modSim=True):
 						f"Find Similar #{ass.autoId}",
 						href=f"/{ks.pg.similar}/{ass.autoId}",
 						className="btn btn-primary btn-sm w-76 me-2"
-					) if canFnd and hasVec else htm.Button(
+					) if canFnd and (hasVec or isVid) else htm.Button(
 						f"No Vector #{ass.autoId}",
 						className="btn btn-secondary btn-sm w-76 me-2",
 						disabled=True,

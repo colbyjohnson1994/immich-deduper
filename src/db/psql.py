@@ -373,7 +373,10 @@ def count(usrId=None, assetType="IMAGE"):
 				q = f"Select Count(*) From {sch.asset} Where 1=1"
 				params = []
 
-				if assetType:
+				if isinstance(assetType, (list, tuple)):
+					q += " AND type IN (" + ",".join(["%s"] * len(assetType)) + ")"
+					params.extend(assetType)
+				elif assetType:
 					q += " AND type = %s"
 					params.append(assetType)
 
@@ -479,9 +482,17 @@ def testAssetsPath():
 
 
 
+def _cksumHex(val):
+	if val is None: return None
+	if isinstance(val, memoryview): val = bytes(val)
+	if isinstance(val, bytes): return val.hex()
+	if isinstance(val, str) and val: return val
+	return None
+
+
 def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 	usrId = usr.id
-	asType = "IMAGE"
+	asTypes = ("IMAGE", "VIDEO")
 
 	try:
 		chk()
@@ -492,8 +503,8 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 			with conn.cursor(row_factory=dict_row) as cursor:
 				# count all
 				sch = getSchema()
-				cntQ = f"Select Count( * ) From {sch.asset} Where status = 'active' And type = %s"
-				cntArs = [asType]
+				cntQ = f"Select Count( * ) From {sch.asset} Where status = 'active' And type IN (%s, %s)"
+				cntArs = list(asTypes)
 
 				if usrId:
 					cntQ += " AND \"ownerId\" = %s"
@@ -505,7 +516,7 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 
 				cntAll = rst.get("count", 0)
 
-				if not cntAll: raise RuntimeError(f"fetch target type[{asType}] not found")
+				if not cntAll: raise RuntimeError(f"fetch target type[{','.join(asTypes)}] not found")
 
 				# lg.info(f"Found {cntAll} {asType.lower()} assets...")
 				onUpdate(15, f"start querying {cntAll}")
@@ -513,9 +524,9 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 				#----------------------------------------------------------------
 				# query assets
 				#----------------------------------------------------------------
-				assetQ = f"Select * From {sch.asset} Where status = 'active' And type = %s"
+				assetQ = f"Select * From {sch.asset} Where status = 'active' And type IN (%s, %s)"
 
-				params = [asType]
+				params = list(asTypes)
 
 				if usrId:
 					assetQ += " AND \"ownerId\" = %s"
@@ -560,6 +571,7 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 				#----------------------------------------------------------------
 				flsSql = Q(f'Select "assetId", type, path From {sch.assetFile} Where "assetId" = ANY(%s)')
 				assetIds = [a['id'] for a in assets]
+				imageIds = [a['id'] for a in assets if a.get('type') == 'IMAGE']
 				afs = []
 
 				for idx, i in enumerate(range(0, len(assetIds), szChunk)):
@@ -659,8 +671,8 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 
 				livePaths = {}
 				liveVdoIds = {}
-				for idx, i in enumerate(range(0, len(assetIds), szChunk)):
-					chunk = assetIds[i:i + szChunk]
+				for idx, i in enumerate(range(0, len(imageIds), szChunk)):
+					chunk = imageIds[i:i + szChunk]
 					cursor.execute(livePhotoQ, (chunk, chunk))
 					chunkRows = cursor.fetchall()
 
@@ -695,13 +707,14 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 
 					if assetId in livePaths: asset['video_path'] = livePaths[assetId]
 					if assetId in liveVdoIds: asset['video_id'] = liveVdoIds[assetId]
+					asset['checksum'] = _cksumHex(asset.get('checksum'))
 
 					if assetId in exifData: asset['exifInfo'] = exifData[assetId]
 					else: noExifIds.append(assetId)
 
 					# final check
 					pathThumbnail = asset.get('thumbnail_path')
-					if not pathThumbnail:
+					if not pathThumbnail and asset.get('type') != 'VIDEO':
 						noThumbIds.append(assetId)
 						continue
 
@@ -714,8 +727,8 @@ def fetchAssets(usr: models.Usr, onUpdate: models.IFnProg):
 				if noExifIds: lg.warn(f"[exif] NotFound for {len(noExifIds)} assets")
 				if noThumbIds: lg.warn(f"[psql] ignored {len(noThumbIds)} assets without thumbnail")
 
-				lg.info(f"Successfully fetched {len(rst)} {asType.lower()} assets")
-				onUpdate(5, f"Successfully fetched {len(rst)} {asType.lower()} assets")
+				lg.info(f"Successfully fetched {len(rst)} assets")
+				onUpdate(5, f"Successfully fetched {len(rst)} assets")
 
 				return rst
 	except Exception as e:

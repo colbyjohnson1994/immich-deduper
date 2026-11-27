@@ -207,7 +207,7 @@ def fth_Status(usrId, dta_cnt, dta_tsk, dta_nfy):
 			txtBtn = "--No users--"
 		else:
 			usr = db.psql.fetchUser(db.dto.usrId)
-			cntRemote = db.psql.count(db.dto.usrId)
+			cntRemote = db.psql.count(db.dto.usrId, ("IMAGE", "VIDEO"))
 			cntLocal = db.pics.count(db.dto.usrId)
 
 			if cntLocal <= 0: disBtnClr = True
@@ -280,7 +280,7 @@ def fth_RunModal(clk_feh, clk_clr, clk_rst, usrId, dta_mdl, dta_tsk, dta_nfy):
 			nfy.warn("not select user..")
 			mdl.reset()
 		else:
-			cnt = db.psql.count(db.dto.usrId)
+			cnt = db.psql.count(db.dto.usrId, ("IMAGE", "VIDEO"))
 			usr = db.psql.fetchUser(db.dto.usrId)
 
 			if not usr: nfy.warn(f"No User Id[{ db.dto.usrId }]")
@@ -325,13 +325,13 @@ def onFetchAssets(doReport: IFnProg, sto: models.ITaskStore):
 
 		doReport(5, f"Starting to fetch assets for {usr.name} from PostgreSQL")
 
-		cntAll = db.psql.count(usr.id)
+		cntAll = db.psql.count(usr.id, ("IMAGE", "VIDEO"))
 		if cntAll <= 0:
 			msg = f"No assets found for {usr.name}"
 			nfy.info(msg)
 			return sto, msg
 
-		doReport(10, f"Found {cntAll} photos, fetching libraries...")
+		doReport(10, f"Found {cntAll} assets, fetching libraries...")
 
 		try:
 			libs = db.psql.fetchLibraries()
@@ -360,7 +360,7 @@ def onFetchAssets(doReport: IFnProg, sto: models.ITaskStore):
 			nfy.error(msg)
 			return sto, msg
 
-		doReport(50, f"Retrieved {len(assets)} photos, starting to save to local database")
+		doReport(50, f"Retrieved {len(assets)} assets, starting to save to local database")
 
 		cntFetch = len(assets)
 		cntNew = 0
