@@ -124,6 +124,99 @@ def findCandidate(autoId:int,taskArgs:dict)->models.Asset:
 
 
 
+def _markSolo(aid: int):
+	db.pics.setSimInfos(aid, [models.SimInfo(aid=aid, score=1.0, isSelf=True)], isOk=1)
+
+
+def commitByteGroup(members: List[models.Asset], grpIdx: int) -> SearchInfo:
+	rst = SearchInfo()
+	kept: List[models.Asset] = []
+	for m in members:
+		if db.dto.checkIsExclude(m): _markSolo(m.autoId)
+		else: kept.append(m)
+
+	if len(kept) < 2:
+		for m in kept: _markSolo(m.autoId)
+		rst.result = "len<2"
+		return rst
+
+	root = kept[0]
+	rest = kept[1:]
+	simAids = [m.autoId for m in rest]
+	infos = [models.SimInfo(aid=root.autoId, score=1.0, isSelf=True)]
+	infos += [models.SimInfo(aid=a, score=1.0, isSelf=False) for a in simAids]
+
+	if db.dto.excl.on and db.dto.excl.fndLes > 0 and len(simAids) < db.dto.excl.fndLes:
+		for m in kept: _markSolo(m.autoId)
+		rst.result = f"excl<{db.dto.excl.fndLes}"
+		return rst
+	if db.dto.excl.on and db.dto.excl.fndOvr > 0 and len(simAids) > db.dto.excl.fndOvr:
+		for m in kept: _markSolo(m.autoId)
+		rst.result = f"excl>{db.dto.excl.fndOvr}"
+		return rst
+
+	db.pics.setSimGIDs(root.autoId, root.autoId)
+	db.pics.setSimInfos(root.autoId, infos)
+	for m in rest: db.pics.setSimGIDs(m.autoId, root.autoId)
+
+	assets = db.pics.getSimAssets(root.autoId, False)
+	for i, ass in enumerate(assets):
+		ass.vw.muodId = grpIdx
+		ass.vw.isMain = (i == 0)
+		if i: ass.vw.score = 1.0
+
+	if db.dto.pathFilter and assets:
+		if not any(db.dto.pathFilter in (a.originalPath or '') for a in assets):
+			db.pics.setSimInfos(root.autoId, infos, isOk=1)
+			for m in rest: _markSolo(m.autoId)
+			rst.asset = root
+			rst.result = "pathFil"
+			return rst
+
+	rst.asset = root
+	rst.bseInfos = infos
+	rst.simAids = simAids
+	rst.assets = assets
+	rst.result = "found"
+	return rst
+
+
+def searchBytes(seed: Optional[models.Asset], doRep: IFnProg, isCancel: IFnCancel, fromUrl: bool, sizeMax: int, grpIdx: int=1) -> SearchResult:
+	gis: List[SearchInfo] = []
+	skip: List[int] = []
+	primed = False
+
+	while len(gis) < sizeMax:
+		if isCancel(): break
+
+		members: List[models.Asset] = []
+		if fromUrl:
+			members = db.pics.checksumGroup(seed.checksum) if seed and seed.checksum else []
+		elif seed and not primed:
+			primed = True
+			members = db.pics.checksumGroup(seed.checksum) if seed.checksum else []
+			if len(members) < 2: members = db.pics.nextChecksumGroup(skip)
+		else:
+			members = db.pics.nextChecksumGroup(skip)
+
+		if len(members) < 2: break
+
+		for m in members: skip.append(m.autoId)
+		gi = commitByteGroup(members, grpIdx)
+		prog = int((len(gis) / sizeMax) * 100) if sizeMax else 0
+		doRep(prog, f"Searching byte-identical videos {len(gis) + 1}/{sizeMax}")
+
+		if gi.assets and not isOverlap([g.assets for g in gis], gi.assets):
+			gis.append(gi)
+			grpIdx += 1
+
+		if fromUrl: break
+		if not db.dto.muod.on and gis: break
+
+	doRep(100, f"Found {len(gis)} byte-identical video groups")
+	return SearchResult(groups=gis)
+
+
 def searchBy(src:models.Asset, doRep:IFnProg, isCancel:IFnCancel, fromUrl=False, BatchSize=128) -> SearchResult:
 	gis = []
 	grpIdx = 1
@@ -132,6 +225,9 @@ def searchBy(src:models.Asset, doRep:IFnProg, isCancel:IFnCancel, fromUrl=False,
 	sizeMax = (db.dto.muod.sz or 1) if not fromUrl else 1 #when fromUrl only process one
 	thMin = db.dto.thMin
 	lg.info(f"[sim:sh] sz[{db.dto.muod.sz}] sizeMax[{sizeMax}] url[{fromUrl}] batch[{BatchSize}]")
+
+	if src and (src.type or '') == 'VIDEO':
+		return searchBytes(src, doRep, isCancel, fromUrl, sizeMax)
 
 	pending: list[models.Asset] = [src] if src else []
 	stopUrl = False
@@ -144,7 +240,13 @@ def searchBy(src:models.Asset, doRep:IFnProg, isCancel:IFnCancel, fromUrl=False,
 		if not pending:
 			pending = db.pics.getAnyNonSim(skipAids, limit=BatchSize)
 			if not pending:
-				lg.info(f"[sim:sh] No more assets to search")
+				if fromUrl:
+					lg.info(f"[sim:sh] No more assets to search")
+					break
+				left = sizeMax - len(gis)
+				byteRst = searchBytes(None, doRep, isCancel, False, left, grpIdx=grpIdx)
+				gis.extend(byteRst.groups)
+				corrupted.extend(byteRst.corrupted)
 				break
 
 		aids = [a.autoId for a in pending]

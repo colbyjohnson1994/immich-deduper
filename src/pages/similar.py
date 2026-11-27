@@ -904,7 +904,7 @@ def sim_RunModal(
 	#------------------------------------------------------------------------
 	elif trgId == k.btnFind:
 		retSte = ste.clear()
-		if cnt.vec <= 0:
+		if cnt.vec <= 0 and not db.pics.nextChecksumGroup():
 			nfy.error("No vector data to process")
 			now.sim.clearAll()
 			return noUpd.by(5).upd(0, [nfy, now])
@@ -922,6 +922,9 @@ def sim_RunModal(
 		#------------------------------------------------
 		if not dstAss:
 			asses = db.pics.getAnyNonSim()
+			if not asses:
+				byteGrp = db.pics.nextChecksumGroup()
+				if byteGrp: asses = [byteGrp[0]]
 			if asses:
 				dstAss = asses[0]
 				lg.info(f"[sim] use #{dstAss.autoId} assetId[{dstAss.id}]")
@@ -960,6 +963,9 @@ def queueAutoNext(sto: models.ITaskStore):
 	tsk = sto.tsk
 
 	asses = db.pics.getAnyNonSim()
+	if not asses:
+		byteGrp = db.pics.nextChecksumGroup()
+		if byteGrp: asses = [byteGrp[0]]
 	if asses:
 		ass = asses[0]
 		lg.info(f"[sim] auto found non-simOk assetId[{ass.id}]")

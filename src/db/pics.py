@@ -54,6 +54,7 @@ _SCHEMAS = {
 		pathThumbnail    TEXT,
 		pathPreview      TEXT,
 		pathVdo          TEXT,
+		checksum         TEXT,
 		jsonExif         TEXT Default '{}',
 		isVectored       INTEGER Default 0,
 		simOk            INTEGER Default 0,
@@ -178,6 +179,7 @@ def init():
 			c.execute('''CREATE INDEX IF NOT EXISTS idx_assets_isVectored ON assets(isVectored)''')
 			c.execute('''CREATE INDEX IF NOT EXISTS idx_assets_simOk ON assets(simOk)''')
 			c.execute('''CREATE INDEX IF NOT EXISTS idx_assets_id ON assets(id)''')
+			c.execute('''CREATE INDEX IF NOT EXISTS idx_assets_type_checksum ON assets(type, checksum)''')
 
 			c.execute('''CREATE INDEX IF NOT EXISTS idx_ass_grp_groupId ON assetsGrps(groupId)''')
 			c.execute('''CREATE INDEX IF NOT EXISTS idx_ass_grp_isMain ON assetsGrps(isMain) WHERE isMain = 1''')
@@ -381,7 +383,7 @@ def getAllNonVector() -> list[models.Asset]:
 	try:
 		with mkConn() as conn:
 			c = conn.cursor()
-			sql = "Select * From assets WHERE isVectored=0"
+			sql = "Select * From assets WHERE isVectored=0 AND IFNULL(type,'') != 'VIDEO'"
 			c.execute(sql)
 			rows = c.fetchall()
 			if not rows: return []
@@ -530,15 +532,15 @@ def saveBy(asset: dict, c: Cursor) -> int:  #, onExist:Callable[[models.Asset],N
 				# lg.info(f"json: {jsonExif}")
 			except Exception as e: raise mkErr("[pics.save] Error converting EXIF to JSON", e)
 
-		c.execute("Select originalPath, pathThumbnail, pathPreview, pathVdo, jsonExif, isFavorite, isArchived, libId From assets Where id = ?", (str(assId),))
+		c.execute("Select originalPath, pathThumbnail, pathPreview, pathVdo, checksum, jsonExif, isFavorite, isArchived, libId, type From assets Where id = ?", (str(assId),))
 		row = c.fetchone()
 
 		if row is None:
 			c.execute('''
 				Insert Into assets (id, ownerId, deviceId, libId, vdoId, type, originalFileName, originalPath,
 				sidecarPath, fileCreatedAt, fileModifiedAt, isFavorite, isArchived,
-				localDateTime, pathThumbnail, pathPreview, pathVdo, jsonExif)
-				Values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				localDateTime, pathThumbnail, pathPreview, pathVdo, checksum, jsonExif)
+				Values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				''', (
 				str(assId),
 				str(asset.get('ownerId')),
@@ -558,6 +560,7 @@ def saveBy(asset: dict, c: Cursor) -> int:  #, onExist:Callable[[models.Asset],N
 				asset.get('thumbnail_path'),
 				asset.get('preview_path'),
 				asset.get('video_path'),
+				asset.get('checksum'),
 				jsonExif,
 			))
 
@@ -569,6 +572,8 @@ def saveBy(asset: dict, c: Cursor) -> int:  #, onExist:Callable[[models.Asset],N
 		if row['pathThumbnail'] != asset.get('thumbnail_path'): needUpdate = True
 		if row['pathPreview'] != asset.get('preview_path'): needUpdate = True
 		if row['pathVdo'] != (str(asset.get('video_path')) if asset.get('video_path') else None): needUpdate = True
+		if row['checksum'] != asset.get('checksum'): needUpdate = True
+		if row['type'] != asset.get('type'): needUpdate = True
 		if row['jsonExif'] != jsonExif: needUpdate = True
 		if row['isFavorite'] != asset.get('isFavorite'): needUpdate = True
 		if row['isArchived'] != (1 if asset.get('visibility') == 'archive' else 0): needUpdate = True
@@ -583,6 +588,8 @@ def saveBy(asset: dict, c: Cursor) -> int:  #, onExist:Callable[[models.Asset],N
 				pathThumbnail = ?,
 				pathPreview = ?,
 				pathVdo = ?,
+				checksum = ?,
+				type = ?,
 				jsonExif = ?,
 				isFavorite = ?,
 				isArchived = ?
@@ -594,6 +601,8 @@ def saveBy(asset: dict, c: Cursor) -> int:  #, onExist:Callable[[models.Asset],N
 				asset.get('thumbnail_path'),
 				asset.get('preview_path'),
 				asset.get('video_path'),
+				asset.get('checksum'),
+				asset.get('type'),
 				jsonExif,
 				asset.get('isFavorite'),
 				1 if asset.get('visibility') == 'archive' else 0,
@@ -637,6 +646,57 @@ def getAnyNonSim(exclAids=[], limit: int=1) -> list[models.Asset]:
 				if len(rst) >= limit: break
 			return rst
 	except Exception as e: raise mkErr("Failed to get non-sim asset", e)
+
+
+def nextChecksumGroup(skipAids=None) -> list[models.Asset]:
+	"""Next unresolved VIDEO group that shares one checksum. Empty if none."""
+	skipAids = list(skipAids or [])
+	try:
+		with mkConn() as conn:
+			c = conn.cursor()
+			sql = """
+				SELECT checksum FROM assets
+				WHERE type = 'VIDEO'
+					AND IFNULL(checksum, '') != ''
+					AND simOk != 1
+					AND NOT EXISTS (SELECT 1 FROM assetsGrps g WHERE g.autoId = assets.autoId)
+			"""
+			params: list = []
+			if skipAids:
+				qargs = ','.join(['?' for _ in skipAids])
+				sql += f" AND checksum NOT IN (SELECT checksum FROM assets WHERE autoId IN ({qargs}))"
+				params.extend(skipAids)
+			sql += " GROUP BY checksum HAVING COUNT(*) >= 2 ORDER BY COUNT(*) DESC LIMIT 1"
+			c.execute(sql, params)
+			row = c.fetchone()
+			if not row: return []
+			ck = row[0]
+			c.execute("""
+				SELECT * FROM assets
+				WHERE type = 'VIDEO' AND checksum = ? AND simOk != 1
+					AND NOT EXISTS (SELECT 1 FROM assetsGrps g WHERE g.autoId = assets.autoId)
+				ORDER BY autoId
+			""", (ck,))
+			rows = c.fetchall()
+			if len(rows) < 2: return []
+			return [models.Asset.fromDB(c, r) for r in rows]
+	except Exception as e: raise mkErr("Failed to get checksum duplicate group", e)
+
+
+def checksumGroup(checksum: str) -> list[models.Asset]:
+	if not checksum: return []
+	try:
+		with mkConn() as conn:
+			c = conn.cursor()
+			c.execute("""
+				SELECT * FROM assets
+				WHERE type = 'VIDEO' AND checksum = ? AND simOk != 1
+					AND NOT EXISTS (SELECT 1 FROM assetsGrps g WHERE g.autoId = assets.autoId)
+				ORDER BY autoId
+			""", (checksum,))
+			rows = c.fetchall()
+			return [models.Asset.fromDB(c, r) for r in rows]
+	except Exception as e: raise mkErr("Failed to get checksum group", e)
 
 
 def countSimOk(isOk=0):

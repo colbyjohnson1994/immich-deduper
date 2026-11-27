@@ -151,6 +151,7 @@ class Asset(BaseDictModel):
 	pathThumbnail: Optional[str] = None
 	pathPreview: Optional[str] = None
 	pathVdo: Optional[str] = None
+	checksum: Optional[str] = None
 	jsonExif: AssetExif = field(default_factory=AssetExif)
 	isVectored: Optional[int] = 0
 	simOk:Optional[int]= 0
